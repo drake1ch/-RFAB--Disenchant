@@ -825,6 +825,9 @@ namespace RFAB::Disenchant
                 }
 
                 g_allowNoDataMessageBoxUntilMs.store(0, std::memory_order_release);
+                if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
+                    queue->AddMessage(RE::MessageBoxMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
+                }
                 ArmForceHideNextMessageBox(3000);
                 ArmSuppressEnchantInput(1500);
 
@@ -932,6 +935,7 @@ namespace RFAB::Disenchant
                 data->isCancellable = true;
 
                 ArmAllowNoDataMessageBox(250);
+                g_messageBoxShowingOurConfirm.store(true, std::memory_order_release);
                 data->QueueMessage();
 
                 {
@@ -1319,7 +1323,10 @@ namespace RFAB::Disenchant
                      g_removeConfirmQueued.load(std::memory_order_acquire) ||
                      ShouldForceHideMessageBoxNow());
 
-                if (suppressNow && !g_messageBoxShowingOurConfirm.load(std::memory_order_acquire)) {
+                const bool allowNow =
+                    g_messageBoxShowingOurConfirm.load(std::memory_order_acquire) ||
+                    ShouldAllowNoDataMessageBoxNow();
+                if (suppressNow && !allowNow) {
                     if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
                         queue->AddMessage(RE::MessageBoxMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
                     }
@@ -1336,6 +1343,37 @@ namespace RFAB::Disenchant
             }
 
             static inline REL::Relocation<decltype(PreDisplay_Thunk)> PreDisplay_Original;
+        };
+
+        struct MessageBoxMenuPostCreateHook
+        {
+            static void PostCreate_Thunk(RE::MessageBoxMenu* a_this)
+            {
+                const bool suppressNow =
+                    (g_removeConfirmOpen.load(std::memory_order_acquire) ||
+                     g_removeConfirmQueued.load(std::memory_order_acquire) ||
+                     ShouldForceHideMessageBoxNow());
+
+                const bool allowNow =
+                    g_messageBoxShowingOurConfirm.load(std::memory_order_acquire) ||
+                    ShouldAllowNoDataMessageBoxNow();
+                if (suppressNow && !allowNow) {
+                    if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
+                        queue->AddMessage(RE::MessageBoxMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
+                    }
+                    return;
+                }
+
+                PostCreate_Original(a_this);
+            }
+
+            static void Install()
+            {
+                REL::Relocation<std::uintptr_t> vtbl{ RE::VTABLE_MessageBoxMenu[0] };
+                PostCreate_Original = vtbl.write_vfunc(0x2, PostCreate_Thunk);
+            }
+
+            static inline REL::Relocation<decltype(PostCreate_Thunk)> PostCreate_Original;
         };
 
         struct ProcessUserEventHook
@@ -1627,6 +1665,7 @@ namespace RFAB::Disenchant
         CraftRunHook::Install();
         DisenchantRunHook::Install();
         MessageBoxMenuProcessMessageHook::Install();
+        MessageBoxMenuPostCreateHook::Install();
         MessageBoxMenuPreDisplayHook::Install();
         if (auto* input = RE::BSInputDeviceManager::GetSingleton()) {
             input->AddEventSink(&g_removeHotkeySink);
