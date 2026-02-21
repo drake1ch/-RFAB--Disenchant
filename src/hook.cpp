@@ -1323,6 +1323,7 @@ namespace RFAB::Disenchant
                     if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
                         queue->AddMessage(RE::MessageBoxMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
                     }
+                    return;
                 }
 
                 PreDisplay_Original(a_this);
