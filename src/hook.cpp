@@ -5,6 +5,7 @@
 #include "RE/E/EnchantConstructMenu.h"
 #include "RE/C/CraftingMenu.h"
 #include "RE/E/ExtraDataList.h"
+#include "RE/E/ExtraCharge.h"
 #include "RE/E/ExtraEnchantment.h"
 #include "RE/E/ExtraUniqueID.h"
 #include "RE/I/InterfaceStrings.h"
@@ -121,7 +122,7 @@ namespace RFAB::Disenchant
                 return false;
             }
 
-            return a_entry->IsEnchanted();
+            return a_entry->GetEnchantment() != nullptr || GetEntryExtraEnchantment(a_entry) != nullptr;
         }
 
         [[nodiscard]] RE::EnchantmentItem* GetEntryExtraEnchantment(RE::InventoryEntryData* a_entry)
@@ -461,6 +462,9 @@ namespace RFAB::Disenchant
 
             const auto signature = GetEntryMarkSignature(a_entry);
             if (signature && IsMarked(*signature)) {
+                if (a_markedKey) {
+                    *a_markedKey = GetAnyEntryKey(a_entry);
+                }
                 if (a_markedSignature) {
                     *a_markedSignature = signature;
                 }
@@ -486,27 +490,64 @@ namespace RFAB::Disenchant
                 return false;
             }
 
-            bool changed = false;
+            auto clearExtraData = [](RE::ExtraDataList* a_extraList, bool* a_hadData) -> bool {
+                if (a_hadData) {
+                    *a_hadData = false;
+                }
+                if (!a_extraList) {
+                    return false;
+                }
+
+                bool changed = false;
+
+                if (auto* extraEnchant = a_extraList->GetByType<RE::ExtraEnchantment>()) {
+                    if (a_hadData) {
+                        *a_hadData = true;
+                    }
+                    if (extraEnchant->enchantment != nullptr || extraEnchant->charge != 0 || extraEnchant->removeOnUnequip) {
+                        changed = true;
+                    }
+                    extraEnchant->enchantment = nullptr;
+                    extraEnchant->charge = 0;
+                    extraEnchant->removeOnUnequip = false;
+                }
+
+                if (auto* extraCharge = a_extraList->GetByType<RE::ExtraCharge>()) {
+                    if (a_hadData) {
+                        *a_hadData = true;
+                    }
+                    if (extraCharge->charge != 0.0F) {
+                        changed = true;
+                    }
+                    extraCharge->charge = 0.0F;
+                }
+
+                return changed;
+            };
+
+            bool changedAny = false;
+            bool hadAnyEnchantData = false;
 
             for (auto* extraList : *a_entry->extraLists) {
                 if (!extraList) {
                     continue;
                 }
 
-                const auto removedEnchant = extraList->RemoveByType(RE::ExtraDataType::kEnchantment);
-                const auto removedCharge = extraList->RemoveByType(RE::ExtraDataType::kCharge);
-                changed = changed || removedEnchant || removedCharge;
-                if (removedEnchant || removedCharge) {
-                    auto* player = RE::PlayerCharacter::GetSingleton();
-                    if (player) {
-                        if (auto* invChanges = player->GetInventoryChanges()) {
-                            invChanges->changed = true;
-                        }
+                bool hadListData = false;
+                changedAny = clearExtraData(extraList, &hadListData) || changedAny;
+                hadAnyEnchantData = hadAnyEnchantData || hadListData;
+            }
+
+            if (changedAny) {
+                auto* player = RE::PlayerCharacter::GetSingleton();
+                if (player) {
+                    if (auto* invChanges = player->GetInventoryChanges()) {
+                        invChanges->changed = true;
                     }
                 }
             }
 
-            return changed;
+            return changedAny || hadAnyEnchantData;
         }
 
         [[nodiscard]] bool ItemHasExtraEnchantment(std::uint64_t a_key)
@@ -530,7 +571,11 @@ namespace RFAB::Disenchant
                 }
 
                 for (auto* extraList : *entry->extraLists) {
-                    if (extraList && extraList->HasType<RE::ExtraEnchantment>()) {
+                    if (!extraList) {
+                        continue;
+                    }
+                    const auto* extraEnchant = extraList->GetByType<RE::ExtraEnchantment>();
+                    if (extraEnchant && extraEnchant->enchantment) {
                         return true;
                     }
                 }
@@ -569,7 +614,11 @@ namespace RFAB::Disenchant
                 }
 
                 for (auto* extraList : *entry->extraLists) {
-                    if (extraList && extraList->HasType<RE::ExtraEnchantment>()) {
+                    if (!extraList) {
+                        continue;
+                    }
+                    const auto* extraEnchant = extraList->GetByType<RE::ExtraEnchantment>();
+                    if (extraEnchant && extraEnchant->enchantment) {
                         return true;
                     }
                 }
@@ -643,9 +692,28 @@ namespace RFAB::Disenchant
                     continue;
                 }
 
-                const auto removedEnchant = extraList->RemoveByType(RE::ExtraDataType::kEnchantment);
-                const auto removedCharge = extraList->RemoveByType(RE::ExtraDataType::kCharge);
-                if (removedEnchant || removedCharge) {
+                bool hadEnchantData = false;
+                bool changed = false;
+
+                if (auto* extraEnchant = extraList->GetByType<RE::ExtraEnchantment>()) {
+                    hadEnchantData = true;
+                    if (extraEnchant->enchantment != nullptr || extraEnchant->charge != 0 || extraEnchant->removeOnUnequip) {
+                        changed = true;
+                    }
+                    extraEnchant->enchantment = nullptr;
+                    extraEnchant->charge = 0;
+                    extraEnchant->removeOnUnequip = false;
+                }
+
+                if (auto* extraCharge = extraList->GetByType<RE::ExtraCharge>()) {
+                    hadEnchantData = true;
+                    if (extraCharge->charge != 0.0F) {
+                        changed = true;
+                    }
+                    extraCharge->charge = 0.0F;
+                }
+
+                if (changed) {
                     auto* player = RE::PlayerCharacter::GetSingleton();
                     if (player) {
                         if (auto* invChanges = player->GetInventoryChanges()) {
@@ -653,7 +721,8 @@ namespace RFAB::Disenchant
                         }
                     }
                 }
-                return removedEnchant || removedCharge;
+
+                return changed || hadEnchantData;
             }
 
             return false;
@@ -758,9 +827,6 @@ namespace RFAB::Disenchant
             auto signature = a_preferredSignature;
             auto* entry = FindMarkedEntryInMenu(a_menu, key, signature);
             if (!entry) {
-                entry = FindMarkedEntryInPlayerInventory(key, signature);
-            }
-            if (!entry) {
                 return false;
             }
 
@@ -773,6 +839,11 @@ namespace RFAB::Disenchant
             bool removed = false;
             if (key) {
                 removed = RemoveEnchantmentFromMarkedInstance(entry, *key);
+            } else {
+                key = GetAnyEntryKey(entry);
+                if (key) {
+                    removed = RemoveEnchantmentFromMarkedInstance(entry, *key);
+                }
             }
 
             if (!removed && signature) {
@@ -786,7 +857,6 @@ namespace RFAB::Disenchant
             if (key) {
                 UnmarkItem(*key);
             }
-
             if (signature) {
                 UnmarkItem(*signature);
             }
@@ -820,16 +890,16 @@ namespace RFAB::Disenchant
 
                 g_messageBoxShowingOurConfirm.store(false, std::memory_order_release);
 
-                if (a_msg != Message::kUnk0 || (!request.key && !request.signature)) {
-                    return;
-                }
-
                 g_allowNoDataMessageBoxUntilMs.store(0, std::memory_order_release);
                 if (auto* queue = RE::UIMessageQueue::GetSingleton()) {
                     queue->AddMessage(RE::MessageBoxMenu::MENU_NAME, RE::UI_MESSAGE_TYPE::kForceHide, nullptr);
                 }
                 ArmForceHideNextMessageBox(3000);
                 ArmSuppressEnchantInput(1500);
+
+                if (a_msg != Message::kUnk0 || (!request.key && !request.signature)) {
+                    return;
+                }
 
                 auto* menu = GetActiveEnchantConstructMenu();
                 const auto removed = RemoveMarkedItem(menu, request.key, request.signature);
